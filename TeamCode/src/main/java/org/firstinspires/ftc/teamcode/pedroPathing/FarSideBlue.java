@@ -11,6 +11,10 @@ import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
+import com.qualcomm.hardware.limelightvision.Limelight3A;
+import com.qualcomm.hardware.limelightvision.LLResult;
 
 @Autonomous(name = "BLUE FAR SIDE", group = "Autonomous")
 @Configurable
@@ -27,22 +31,90 @@ public class FarSideBlue extends OpMode {
     private boolean pathStarted = false;
 
     private DcMotorEx launcher = null;
+    // Dual-launcher support
+    private DcMotorEx launcher1 = null;
     private DcMotorEx intake = null;
     private DcMotorEx feed = null;
 
+    // Drive motors for aiming
+    private DcMotor leftFrontDrive = null;
+    private DcMotor rightFrontDrive = null;
+    private DcMotor leftBackDrive = null;
+    private DcMotor rightBackDrive = null;
+
+    // Limelight
+    private Limelight3A limelight = null;
+
+    // Aiming state
+    private boolean aimingStarted = false;
+    private boolean aimDone = false;
+    private long aimStartTime = 0;
+
+    // Aiming tuning (adjust if needed)
+    private final double ROTATION_KP = 0.05;
+    private final double AIM_TOLERANCE_DEG = 2.0;
+    private final double MIN_ROTATION_POWER = 0.12;
+    private final double MAX_ROTATION_POWER = 0.5;
+    private final long AIM_TIMEOUT_MS = 2000;
+
     @Override
     public void init() {
+        // Launchers + feeder + intake
         launcher = hardwareMap.get(DcMotorEx.class, "launch");
         intake = hardwareMap.get(DcMotorEx.class, "intake");
         feed = hardwareMap.get(DcMotorEx.class, "feed");
 
+        // try to get second launcher; allow fallback to single launcher
+        try {
+            launcher1 = hardwareMap.get(DcMotorEx.class, "launch1");
+        } catch (Exception e) {
+            launcher1 = null;
+        }
+
+        // directions: reverse primary so existing wiring remains compatible; mirror second
         launcher.setDirection(DcMotorEx.Direction.REVERSE);
+        if (launcher1 != null) launcher1.setDirection(DcMotorEx.Direction.FORWARD);
         feed.setDirection(DcMotorEx.Direction.REVERSE);
+
+        // Keep existing PIDF; NOT adding auto-RPM algorithms
         launcher.setPIDFCoefficients(
                 DcMotorEx.RunMode.RUN_USING_ENCODER,
                 new PIDFCoefficients(60, 0, 0, 12)
         );
+        if (launcher1 != null) {
+            launcher1.setPIDFCoefficients(
+                    DcMotorEx.RunMode.RUN_USING_ENCODER,
+                    new PIDFCoefficients(60, 0, 0, 12)
+            );
+        }
 
+        // Drive motors used for aiming rotation
+        leftFrontDrive = hardwareMap.get(DcMotor.class, "lf");
+        rightFrontDrive = hardwareMap.get(DcMotor.class, "rf");
+        leftBackDrive = hardwareMap.get(DcMotor.class, "lb");
+        rightBackDrive = hardwareMap.get(DcMotor.class, "rb");
+
+        leftFrontDrive.setDirection(DcMotorSimple.Direction.FORWARD);
+        leftBackDrive.setDirection(DcMotorSimple.Direction.FORWARD);
+        rightFrontDrive.setDirection(DcMotorSimple.Direction.REVERSE);
+        rightBackDrive.setDirection(DcMotorSimple.Direction.REVERSE);
+
+        leftFrontDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        leftBackDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        rightFrontDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        rightBackDrive.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+
+        // Limelight init (optional)
+        try {
+            limelight = hardwareMap.get(Limelight3A.class, "limelight");
+            limelight.setPollRateHz(100);
+            limelight.pipelineSwitch(0);
+            limelight.start();
+        } catch (Exception e) {
+            limelight = null;
+        }
+
+        // existing PIDF telemetry and follower setup
         panelsTelemetry = PanelsTelemetry.INSTANCE.getTelemetry();
         follower = Constants.createFollower(hardwareMap);
 
@@ -64,6 +136,20 @@ public class FarSideBlue extends OpMode {
         panelsTelemetry.debug("X", follower.getPose().getX());
         panelsTelemetry.debug("Y", follower.getPose().getY());
         panelsTelemetry.debug("Heading", follower.getPose().getHeading());
+        // Limelight telemetry
+        if (limelight != null) {
+            LLResult r = limelight.getLatestResult();
+            if (r != null && r.isValid()) {
+                panelsTelemetry.debug("LL_hasTarget", "true");
+                panelsTelemetry.debug("LL_tx", String.format("%.2f", r.getTx()));
+                panelsTelemetry.debug("LL_ta", String.format("%.2f", r.getTa()));
+            } else {
+                panelsTelemetry.debug("LL_hasTarget", "false");
+            }
+        } else {
+            panelsTelemetry.debug("LL", "Not configured");
+        }
+        panelsTelemetry.debug("AimStatus", aimDone ? "aligned/idle" : (aimingStarted ? "aiming" : "idle"));
         panelsTelemetry.update(telemetry);
     }
 
@@ -85,16 +171,36 @@ public class FarSideBlue extends OpMode {
 
             case 1:
                 if (!pathStarted) {
-                    launcher.setVelocity(1685);
+                    // Spin up both launchers to 1500 and start aiming
+                    setLauncherVelocity(1500);
                     launcherStartTime = System.currentTimeMillis();
+                    aimingStarted = true;
+                    aimDone = false;
+                    aimStartTime = System.currentTimeMillis();
                     pathStarted = true;
                 }
-                if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0) {
-                    feed.setPower(0.5);
+                // handle aiming (non-blocking)
+                if (aimingStarted && !aimDone) {
+                    if (doAimStep()) {
+                        aimDone = true;
+                        aimingStarted = false;
+                        // stop rotation
+                        mecanumDrive(0, 0, 0);
+                    } else if (System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
+                        aimDone = true;
+                        aimingStarted = false;
+                        mecanumDrive(0, 0, 0);
+                    }
+                }
+
+                // Start feeding only after spin-up delay AND (aim done or no target)
+                if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0
+                        && (aimDone || limelight == null || !hasLimelightTarget())) {
+                    feed.setPower(1.0);
                     intake.setPower(1.0);
                 }
                 if (waitStarted && System.currentTimeMillis() - waitStartTime >= paths.Wait2) {
-                    launcher.setVelocity(0);
+                    setLauncherVelocity(0);
                     feed.setPower(0);
                     intake.setPower(0);
                     waitStarted = false;
@@ -148,18 +254,35 @@ public class FarSideBlue extends OpMode {
 
             case 5:
                 if (!pathStarted) {
-                    launcher.setVelocity(1700);
+                    // Spin up both launchers to 1500 and start aiming
+                    setLauncherVelocity(1500);
                     launcherStartTime = System.currentTimeMillis();
                     waitStartTime = System.currentTimeMillis();
+                    aimingStarted = true;
+                    aimDone = false;
+                    aimStartTime = System.currentTimeMillis();
                     pathStarted = true;
                     waitStarted = true;
                 }
-                if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0) {
-                    feed.setPower(0.4);
+                if (aimingStarted && !aimDone) {
+                    if (doAimStep()) {
+                        aimDone = true;
+                        aimingStarted = false;
+                        mecanumDrive(0, 0, 0);
+                    } else if (System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
+                        aimDone = true;
+                        aimingStarted = false;
+                        mecanumDrive(0, 0, 0);
+                    }
+                }
+
+                if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0
+                        && (aimDone || limelight == null || !hasLimelightTarget())) {
+                    feed.setPower(1.0);
                     intake.setPower(1);
                 }
                 if (waitStarted && System.currentTimeMillis() - waitStartTime >= paths.Wait2) {
-                    launcher.setVelocity(0);
+                    setLauncherVelocity(0);
                     feed.setPower(0);
                     intake.setPower(0);
                     waitStarted = false;
@@ -227,18 +350,35 @@ public class FarSideBlue extends OpMode {
 
             case 9:
                 if (!pathStarted) {
-                    launcher.setVelocity(1700);
+                    // Spin both to 1500 and aim before shooting
+                    setLauncherVelocity(1500);
                     launcherStartTime = System.currentTimeMillis();
                     waitStartTime = System.currentTimeMillis();
+                    aimingStarted = true;
+                    aimDone = false;
+                    aimStartTime = System.currentTimeMillis();
                     pathStarted = true;
                     waitStarted = true;
                 }
-                if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0) {
-                    feed.setPower(0.4);
+                if (aimingStarted && !aimDone) {
+                    if (doAimStep()) {
+                        aimDone = true;
+                        aimingStarted = false;
+                        mecanumDrive(0, 0, 0);
+                    } else if (System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
+                        aimDone = true;
+                        aimingStarted = false;
+                        mecanumDrive(0, 0, 0);
+                    }
+                }
+
+                if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0
+                        && (aimDone || limelight == null || !hasLimelightTarget())) {
+                    feed.setPower(1.0);
                     intake.setPower(1.0);
                 }
                 if (waitStarted && System.currentTimeMillis() - waitStartTime >= paths.Wait2) {
-                    launcher.setVelocity(0);
+                    setLauncherVelocity(0);
                     feed.setPower(0);
                     intake.setPower(0);
                     waitStarted = false;
@@ -258,6 +398,56 @@ public class FarSideBlue extends OpMode {
                 }
                 break;
         }
+    }
+
+    // Helper: check Limelight target presence
+    private boolean hasLimelightTarget() {
+        if (limelight == null) return false;
+        LLResult r = limelight.getLatestResult();
+        return r != null && r.isValid();
+    }
+
+    // Perform one aim step; returns true if aligned (within tolerance)
+    private boolean doAimStep() {
+        if (limelight == null) {
+            return true; // no limelight -> treat as aligned
+        }
+        LLResult result = limelight.getLatestResult();
+        if (result == null || !result.isValid()) {
+            return true; // no valid target -> treat as aligned
+        }
+        double tx = result.getTx(); // degrees
+        double rotationPower = tx * ROTATION_KP;
+
+        if (Math.abs(tx) < AIM_TOLERANCE_DEG) {
+            return true;
+        } else {
+            if (Math.abs(rotationPower) < MIN_ROTATION_POWER) {
+                rotationPower = Math.copySign(MIN_ROTATION_POWER, rotationPower);
+            }
+            rotationPower = Math.max(-MAX_ROTATION_POWER, Math.min(MAX_ROTATION_POWER, rotationPower));
+            mecanumDrive(0, 0, rotationPower);
+            return false;
+        }
+    }
+
+    // Set both launcher motors (dual support)
+    private void setLauncherVelocity(double velocity) {
+        if (launcher != null) launcher.setVelocity(velocity);
+        if (launcher1 != null) launcher1.setVelocity(velocity);
+    }
+
+    // Mecanum drive helper (simple power set)
+    void mecanumDrive(double forward, double strafe, double rotate) {
+        double denominator = Math.max(Math.abs(forward) + Math.abs(strafe) + Math.abs(rotate), 1);
+        double leftFrontPower = (forward + strafe + rotate) / denominator;
+        double rightFrontPower = (forward - strafe - rotate) / denominator;
+        double leftBackPower = (forward - strafe + rotate) / denominator;
+        double rightBackPower = (forward + strafe - rotate) / denominator;
+        leftFrontDrive.setPower(leftFrontPower);
+        rightFrontDrive.setPower(rightFrontPower);
+        leftBackDrive.setPower(leftBackPower);
+        rightBackDrive.setPower(rightBackPower);
     }
 
     public static class Paths {

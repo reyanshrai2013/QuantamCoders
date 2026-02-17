@@ -11,8 +11,6 @@ import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 @TeleOp(name = "Beleop", group = "StarterBot")
 public class Beleop extends OpMode {
 
-    final double STOP_SPEED = 0.0;
-    final double FULL_SPEED = -1.0;
 
     final double LAUNCHER_TARGET_VELOCITY = 1400;
     final double LAUNCHER_MIN_VELOCITY = 500;
