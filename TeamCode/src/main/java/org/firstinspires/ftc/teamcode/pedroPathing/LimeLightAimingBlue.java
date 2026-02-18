@@ -14,8 +14,6 @@ import com.qualcomm.hardware.limelightvision.Limelight3A;
 @TeleOp(name = "BLUE SIDE TELEOP", group = "StarterBot")
 public class LimeLightAimingBlue extends OpMode {
 
-    final double STOP_SPEED = 0.0;
-    final double FULL_SPEED = -1.0;
 
     final double LAUNCHER_TARGET_VELOCITY = 1400;
     final double LAUNCHER_MIN_VELOCITY = 500;
