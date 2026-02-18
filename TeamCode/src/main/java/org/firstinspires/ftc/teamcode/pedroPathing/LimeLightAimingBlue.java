@@ -8,8 +8,11 @@ import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 
-@TeleOp(name = "Beleop", group = "StarterBot")
-public class Beleop extends OpMode {
+import com.qualcomm.hardware.limelightvision.LLResult;
+import com.qualcomm.hardware.limelightvision.Limelight3A;
+
+@TeleOp(name = "BLUE SIDE TELEOP", group = "StarterBot")
+public class LimeLightAimingBlue extends OpMode {
 
     final double STOP_SPEED = 0.0;
     final double FULL_SPEED = -1.0;
@@ -18,9 +21,16 @@ public class Beleop extends OpMode {
     final double LAUNCHER_MIN_VELOCITY = 500;
     final double LAUNCHER_MAX_VELOCITY = 6000;
     final double LAUNCHER_MIN_ADJUST = 0;
-    final double LAUNCHER_STEP = 100;
+    final double LAUNCHER_STEP = 50;
 
     final double VELOCITY_TOLERANCE = 75;
+
+    // Limelight tracking constants
+    final double ROTATION_KP = 0.05; // Proportional gain for rotation (tune this)
+    final double TARGET_TOLERANCE = 2.0; // Degrees of acceptable error
+    final double MIN_ROTATION_POWER = 0.15; // Minimum power to overcome friction
+    final double MAX_ROTATION_POWER = 0.5; // Maximum rotation speed
+
 
     private DcMotor leftFrontDrive = null;
     private DcMotor rightFrontDrive = null;
@@ -28,17 +38,17 @@ public class Beleop extends OpMode {
     private DcMotor rightBackDrive = null;
 
     private DcMotorEx launcherRight = null;
-
     private DcMotorEx launcherLeft = null;
     private DcMotor intake = null;
     private DcMotor rightFeeder = null;
+
+    private Limelight3A limelight = null;
 
     private enum LaunchState {IDLE, SPIN_UP, LAUNCH}
 
     private LaunchState launchState = LaunchState.IDLE;
 
     double leftFrontPower, rightFrontPower, leftBackPower, rightBackPower;
-
 
     // === Launcher control ===
     double launcherTargetVelocity = 0;
@@ -60,6 +70,12 @@ public class Beleop extends OpMode {
         launcherLeft = hardwareMap.get(DcMotorEx.class, "launch1");
         rightFeeder = hardwareMap.get(DcMotor.class, "feed");
 
+        // Initialize Limelight
+        limelight = hardwareMap.get(Limelight3A.class, "limelight");
+        limelight.setPollRateHz(100); // Poll 100 times per second
+        limelight.pipelineSwitch(1); // Use pipeline 1 (your AprilTag pipeline)
+        limelight.start(); // Start the Limelight
+
         rightFeeder.setDirection(DcMotor.Direction.REVERSE);
         launcherRight.setDirection(DcMotor.Direction.REVERSE);
         launcherLeft.setDirection(DcMotor.Direction.FORWARD);
@@ -79,6 +95,7 @@ public class Beleop extends OpMode {
         rightFeeder.setZeroPowerBehavior(BRAKE);
 
         telemetry.addData("Status", "Initialized");
+        telemetry.addData("Limelight", "Ready");
     }
 
     private void setupLaunchers() {
@@ -101,13 +118,20 @@ public class Beleop extends OpMode {
     public void loop() {
 
         // =================
-        // MECANUM DRIVE
+        // DRIVE CONTROL WITH LIMELIGHT TRACKING
         // =================
-        mecanumDrive(
-                -gamepad2.left_stick_y,
-                gamepad2.left_stick_x,
-                gamepad2.right_stick_x
-        );
+        // Hold right bumper on gamepad 2 to enable AprilTag tracking
+        if (gamepad2.right_bumper) {
+            // Auto-tracking mode (while holding right bumper)
+            autoTrackAprilTag();
+        } else {
+            // Manual drive mode
+            mecanumDrive(
+                    -gamepad2.left_stick_y,
+                    gamepad2.left_stick_x,
+                    gamepad2.right_stick_x
+            );
+        }
 
         // =================
         // LAUNCHER STATE MACHINE
@@ -141,7 +165,6 @@ public class Beleop extends OpMode {
             case LAUNCH:
                 setLauncherVelocity(launcherTargetVelocity);
 
-
                 if (gamepad1.b) {
                     rightFeeder.setPower(0);
                     launchState = LaunchState.IDLE;
@@ -154,7 +177,6 @@ public class Beleop extends OpMode {
         // =================
         boolean lb = gamepad1.left_bumper;
         boolean lt = gamepad1.left_trigger > 0.1;
-        boolean rt = gamepad1.right_trigger > 0.1;
 
         if (lb && !lastLB) {
             launcherTargetVelocity += LAUNCHER_STEP;
@@ -174,19 +196,22 @@ public class Beleop extends OpMode {
 
         lastLB = lb;
         lastLT = lt;
-// dhruvi is a big mac
 
+        // =================
+        // FEEDER CONTROL
+        // =================
         if (gamepad1.right_bumper) {
-            rightFeeder.setPower(0.55);
+            rightFeeder.setPower(0.75);
         } else if (gamepad1.dpad_down) {
             rightFeeder.setPower(-0.55);
         } else if (gamepad1.dpad_up) {
             rightFeeder.setPower(1);
-        }
-        else {
+        } else {
             rightFeeder.setPower(0);
         }
 
+        // =================
+        // INTAKE CONTROL
         // =================
         if (gamepad1.a) {
             intake.setPower(1.0);
@@ -207,7 +232,63 @@ public class Beleop extends OpMode {
                 Math.abs(launcherRight.getVelocity() - launcherTargetVelocity)
                         < VELOCITY_TOLERANCE
         );
+        telemetry.addData("---", "---");
+        telemetry.addData("AprilTag Tracking", gamepad2.right_bumper ? "ACTIVE" : "INACTIVE");
+        telemetry.addData("(Hold Right Bumper on GP2)", "to track AprilTag");
         telemetry.update();
+    }
+
+    /**
+     * Auto-tracks AprilTag and rotates the robot to face it
+     */
+    private void autoTrackAprilTag() {
+        LLResult result = limelight.getLatestResult();
+
+        if (result != null && result.isValid()) {
+            // Get horizontal offset from crosshair to target (in degrees)
+            double tx = result.getTx();
+
+            // Calculate rotation power using proportional control
+            double rotationPower = tx * ROTATION_KP;
+
+            // Apply deadband - if we're close enough, stop rotating
+            if (Math.abs(tx) < TARGET_TOLERANCE) {
+                rotationPower = 0;
+                telemetry.addData("Target Status", "LOCKED ON!");
+            } else {
+                // Apply minimum power to overcome friction
+                if (Math.abs(rotationPower) < MIN_ROTATION_POWER) {
+                    rotationPower = Math.signum(rotationPower) * MIN_ROTATION_POWER;
+                }
+
+                // Limit maximum rotation speed
+                rotationPower = Math.max(-MAX_ROTATION_POWER,
+                        Math.min(MAX_ROTATION_POWER, rotationPower));
+
+                telemetry.addData("Target Status", "Tracking...");
+            }
+
+            // Allow driver to still strafe and drive forward/backward
+            mecanumDrive(
+                    -gamepad2.left_stick_y,  // Forward/backward control
+                    gamepad2.left_stick_x,    // Strafe control
+                    rotationPower             // Auto-rotation to target
+            );
+
+            telemetry.addData("Target X Offset", "%.2f degrees", tx);
+            telemetry.addData("Rotation Power", "%.2f", rotationPower);
+            telemetry.addData("Target Area", "%.2f%%", result.getTa());
+
+        } else {
+            // No target found - give full manual control
+            mecanumDrive(
+                    -gamepad2.left_stick_y,
+                    gamepad2.left_stick_x,
+                    gamepad2.right_stick_x
+            );
+            telemetry.addData("Target Status", "NO TARGET DETECTED");
+            telemetry.addData("Info", "Point camera at AprilTag");
+        }
     }
 
     private void setLauncherVelocity(double velocity) {

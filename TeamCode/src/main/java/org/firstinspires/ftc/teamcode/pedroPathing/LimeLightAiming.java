@@ -11,7 +11,7 @@ import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 import com.qualcomm.hardware.limelightvision.LLResult;
 import com.qualcomm.hardware.limelightvision.Limelight3A;
 
-@TeleOp(name = "Limelight Aiming", group = "StarterBot")
+@TeleOp(name = "RED SIDE TELEOP", group = "StarterBot")
 public class LimeLightAiming extends OpMode {
 
     final double STOP_SPEED = 0.0;
@@ -312,5 +312,4 @@ public class LimeLightAiming extends OpMode {
         rightBackDrive.setPower(rightBackPower);
     }
 }
-
 
