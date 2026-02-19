@@ -6,18 +6,16 @@ import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 
-import com.qualcomm.hardware.limelightvision.LLResult;
-import com.qualcomm.hardware.limelightvision.Limelight3A;
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.DualLauncher;
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.LimelightAiming;
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.Inits;
 
-@TeleOp(name = "Limelight Aiming", group = "StarterBot")
-public class LimeLightAiming extends OpMode {
+// Limelight handled by LimelightAiming
+@TeleOp(name = "BLUE SIDE TELEOP", group = "StarterBot")
+public class BlueBeleop extends OpMode {
 
-    final double STOP_SPEED = 0.0;
-    final double FULL_SPEED = -1.0;
-
-    final double LAUNCHER_TARGET_VELOCITY = 1400;
+    final double LAUNCHER_TARGET_VELOCITY = 1500;
     final double LAUNCHER_MIN_VELOCITY = 500;
     final double LAUNCHER_MAX_VELOCITY = 6000;
     final double LAUNCHER_MIN_ADJUST = 0;
@@ -42,7 +40,7 @@ public class LimeLightAiming extends OpMode {
     private DcMotor intake = null;
     private DcMotor rightFeeder = null;
 
-    private Limelight3A limelight = null;
+    private LimelightAiming limelightAimer = null;
 
     private enum LaunchState {IDLE, SPIN_UP, LAUNCH}
 
@@ -60,32 +58,32 @@ public class LimeLightAiming extends OpMode {
     @Override
     public void init() {
 
-        leftFrontDrive = hardwareMap.get(DcMotor.class, "lf");
-        rightFrontDrive = hardwareMap.get(DcMotor.class, "rf");
-        leftBackDrive = hardwareMap.get(DcMotor.class, "lb");
-        rightBackDrive = hardwareMap.get(DcMotor.class, "rb");
+        // Centralized launcher init (dual-launcher helper)
+        DualLauncher.init(hardwareMap);
+        launcherRight = DualLauncher.getPrimary();
+        launcherLeft = DualLauncher.getSecondary();
 
-        intake = hardwareMap.get(DcMotor.class, "intake");
-        launcherRight = hardwareMap.get(DcMotorEx.class, "launch");
-        launcherLeft = hardwareMap.get(DcMotorEx.class, "launch1");
-        rightFeeder = hardwareMap.get(DcMotor.class, "feed");
+        // Single-command init for other motors
+        Inits.init(hardwareMap);
+        leftFrontDrive = Inits.getLeftFront();
+        rightFrontDrive = Inits.getRightFront();
+        leftBackDrive = Inits.getLeftBack();
+        rightBackDrive = Inits.getRightBack();
+        // prefer DcMotorEx for intake/feed if available; fall back to DcMotor via Inits getters
+        intake = Inits.getIntake() != null ? Inits.getIntake() : null;
+        rightFeeder = Inits.getFeed();
 
-        // Initialize Limelight
-        limelight = hardwareMap.get(Limelight3A.class, "limelight");
-        limelight.setPollRateHz(100); // Poll 100 times per second
-        limelight.pipelineSwitch(0); // Use pipeline 0 (your AprilTag pipeline)
-        limelight.start(); // Start the Limelight
+        // single-statement auto-aim enable (handles hardware init internally)
+        limelightAimer = new LimelightAiming(hardwareMap, ROTATION_KP, TARGET_TOLERANCE, MIN_ROTATION_POWER, MAX_ROTATION_POWER);
 
-        rightFeeder.setDirection(DcMotor.Direction.REVERSE);
-        launcherRight.setDirection(DcMotor.Direction.REVERSE);
-        launcherLeft.setDirection(DcMotor.Direction.FORWARD);
+        if (rightFeeder != null) rightFeeder.setDirection(DcMotor.Direction.REVERSE);
+        // launcher directions/PIDF handled by DualLauncher.init(...)
 
         leftFrontDrive.setDirection(DcMotor.Direction.FORWARD);
         rightFrontDrive.setDirection(DcMotor.Direction.REVERSE);
         leftBackDrive.setDirection(DcMotor.Direction.FORWARD);
         rightBackDrive.setDirection(DcMotor.Direction.REVERSE);
 
-        setupLaunchers();
 
         leftFrontDrive.setZeroPowerBehavior(BRAKE);
         rightFrontDrive.setZeroPowerBehavior(BRAKE);
@@ -99,19 +97,7 @@ public class LimeLightAiming extends OpMode {
     }
 
     private void setupLaunchers() {
-        launcherRight.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-        launcherRight.setZeroPowerBehavior(BRAKE);
-        launcherRight.setPIDFCoefficients(
-                DcMotor.RunMode.RUN_USING_ENCODER,
-                new PIDFCoefficients(60, 0, 0, 12)
-        );
-
-        launcherLeft.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-        launcherLeft.setZeroPowerBehavior(BRAKE);
-        launcherLeft.setPIDFCoefficients(
-                DcMotor.RunMode.RUN_USING_ENCODER,
-                new PIDFCoefficients(60, 0, 0, 12)
-        );
+        // kept for compatibility; launcher init/PIDF handled in DualLauncher.init()
     }
 
     @Override
@@ -163,7 +149,9 @@ public class LimeLightAiming extends OpMode {
                 break;
 
             case LAUNCH:
+                // ensure launchers at target RPM and feeder runs full during launch
                 setLauncherVelocity(launcherTargetVelocity);
+                rightFeeder.setPower(1.0);
 
                 if (gamepad1.b) {
                     rightFeeder.setPower(0);
@@ -200,14 +188,19 @@ public class LimeLightAiming extends OpMode {
         // =================
         // FEEDER CONTROL
         // =================
-        if (gamepad1.right_bumper) {
-            rightFeeder.setPower(0.75);
-        } else if (gamepad1.dpad_down) {
-            rightFeeder.setPower(-0.55);
-        } else if (gamepad1.dpad_up) {
-            rightFeeder.setPower(1);
+        // If launching, force feeder=1.0; else allow manual overrides
+        if (launchState == LaunchState.LAUNCH) {
+            rightFeeder.setPower(1.0);
         } else {
-            rightFeeder.setPower(0);
+            if (gamepad1.right_bumper) {
+                rightFeeder.setPower(0.75);
+            } else if (gamepad1.dpad_down) {
+                rightFeeder.setPower(-0.55);
+            } else if (gamepad1.dpad_up) {
+                rightFeeder.setPower(1);
+            } else {
+                rightFeeder.setPower(0);
+            }
         }
 
         // =================
@@ -242,58 +235,30 @@ public class LimeLightAiming extends OpMode {
      * Auto-tracks AprilTag and rotates the robot to face it
      */
     private void autoTrackAprilTag() {
-        LLResult result = limelight.getLatestResult();
-
-        if (result != null && result.isValid()) {
-            // Get horizontal offset from crosshair to target (in degrees)
-            double tx = result.getTx();
-
-            // Calculate rotation power using proportional control
-            double rotationPower = tx * ROTATION_KP;
-
-            // Apply deadband - if we're close enough, stop rotating
-            if (Math.abs(tx) < TARGET_TOLERANCE) {
-                rotationPower = 0;
-                telemetry.addData("Target Status", "LOCKED ON!");
-            } else {
-                // Apply minimum power to overcome friction
-                if (Math.abs(rotationPower) < MIN_ROTATION_POWER) {
-                    rotationPower = Math.signum(rotationPower) * MIN_ROTATION_POWER;
-                }
-
-                // Limit maximum rotation speed
-                rotationPower = Math.max(-MAX_ROTATION_POWER,
-                        Math.min(MAX_ROTATION_POWER, rotationPower));
-
-                telemetry.addData("Target Status", "Tracking...");
-            }
-
-            // Allow driver to still strafe and drive forward/backward
-            mecanumDrive(
-                    -gamepad2.left_stick_y,  // Forward/backward control
-                    gamepad2.left_stick_x,    // Strafe control
-                    rotationPower             // Auto-rotation to target
-            );
-
-            telemetry.addData("Target X Offset", "%.2f degrees", tx);
-            telemetry.addData("Rotation Power", "%.2f", rotationPower);
-            telemetry.addData("Target Area", "%.2f%%", result.getTa());
-
-        } else {
-            // No target found - give full manual control
+        // Use centralized aimer to compute rotation (returns null if aligned or no target)
+        Double rotationPower = limelightAimer.getRotationIfNeeded();
+        if (rotationPower == null) {
             mecanumDrive(
                     -gamepad2.left_stick_y,
                     gamepad2.left_stick_x,
                     gamepad2.right_stick_x
             );
-            telemetry.addData("Target Status", "NO TARGET DETECTED");
-            telemetry.addData("Info", "Point camera at AprilTag");
+            telemetry.addData("Target Status", limelightAimer.hasValidTarget() ? "LOCKED ON!" : "NO TARGET DETECTED");
+        } else {
+            mecanumDrive(
+                    -gamepad2.left_stick_y,
+                    gamepad2.left_stick_x,
+                    rotationPower
+            );
+            telemetry.addData("Target Status", "Tracking...");
+            telemetry.addData("Rotation Power", "%.2f", rotationPower);
+            telemetry.addData("Target X Offset", "%.2f degrees", limelightAimer.getTxOrNaN());
+            telemetry.addData("Target Area", "%.2f%%", limelightAimer.getTaOrNaN());
         }
     }
 
     private void setLauncherVelocity(double velocity) {
-        launcherRight.setVelocity(velocity);
-        launcherLeft.setVelocity(velocity);
+        DualLauncher.setLauncherVelocity(velocity);
     }
 
     void mecanumDrive(double forward, double strafe, double rotate) {
@@ -312,5 +277,4 @@ public class LimeLightAiming extends OpMode {
         rightBackDrive.setPower(rightBackPower);
     }
 }
-
 
