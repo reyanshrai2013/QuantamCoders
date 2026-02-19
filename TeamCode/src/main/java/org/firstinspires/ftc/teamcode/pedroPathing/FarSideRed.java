@@ -1,11 +1,8 @@
 package org.firstinspires.ftc.teamcode.pedroPathing;
 
 import com.bylazar.configurables.annotations.Configurable;
-
 import com.bylazar.telemetry.PanelsTelemetry;
-
 import com.bylazar.telemetry.TelemetryManager;
-
 import com.pedropathing.follower.Follower;
 
 import com.pedropathing.geometry.BezierLine;
@@ -20,18 +17,13 @@ import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 
-import com.qualcomm.robotcore.hardware.PIDFCoefficients;
-
 // New imports for dual launcher + drive motors + Limelight
 import com.qualcomm.robotcore.hardware.DcMotor;
-import com.qualcomm.robotcore.hardware.DcMotorSimple;
-import com.qualcomm.robotcore.hardware.DcMotor.ZeroPowerBehavior;
 
-import com.qualcomm.hardware.limelightvision.Limelight3A;
-import com.qualcomm.hardware.limelightvision.LLResult;
-
-import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
-
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.Constants;
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.DualLauncher;
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.LimelightAiming;
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.Inits;
 
 
 @Autonomous(name = "RED FAR SIDE", group = "Autonomous")
@@ -67,7 +59,6 @@ public class FarSideRed extends OpMode {
     private DcMotorEx launcher1 = null;
 
     private DcMotorEx intake = null;
-
     private DcMotorEx feed = null;
 
     // Drive motors (for aiming rotation)
@@ -76,8 +67,8 @@ public class FarSideRed extends OpMode {
     private DcMotor leftBackDrive = null;
     private DcMotor rightBackDrive = null;
 
-    // Limelight
-    private Limelight3A limelight = null;
+    // Centralized aiming helper (handles Limelight init internally)
+    private LimelightAiming limelightAimer = null;
 
     // Aiming state
     private boolean aimingStarted = false;
@@ -96,66 +87,17 @@ public class FarSideRed extends OpMode {
     @Override
 
     public void init() {
+        // Centralized launcher init (dual-launcher helper)
+        DualLauncher.init(hardwareMap); // configures launcher motors only
+        launcher = DualLauncher.getPrimary();
+        launcher1 = DualLauncher.getSecondary();
 
-// Initialize motors
-
-        launcher = hardwareMap.get(DcMotorEx.class, "launch");
-        // Initialize second launcher
-        try {
-            launcher1 = hardwareMap.get(DcMotorEx.class, "launch1");
-        } catch (Exception e) {
-            launcher1 = null; // allow single-motor fallback
-        }
-
-        intake = hardwareMap.get(DcMotorEx.class, "intake");
-
-        feed = hardwareMap.get(DcMotorEx.class, "feed");
-
-        // Initialize drive motors for aiming
-        leftFrontDrive = hardwareMap.get(DcMotor.class, "lf");
-        rightFrontDrive = hardwareMap.get(DcMotor.class, "rf");
-        leftBackDrive = hardwareMap.get(DcMotor.class, "lb");
-        rightBackDrive = hardwareMap.get(DcMotor.class, "rb");
-
-        // Directions -- follow the same as Constants driveConstants
-        leftFrontDrive.setDirection(DcMotorSimple.Direction.FORWARD);
-        leftBackDrive.setDirection(DcMotorSimple.Direction.FORWARD);
-        rightFrontDrive.setDirection(DcMotorSimple.Direction.REVERSE);
-        rightBackDrive.setDirection(DcMotorSimple.Direction.REVERSE);
-
-        leftFrontDrive.setZeroPowerBehavior(ZeroPowerBehavior.BRAKE);
-        leftBackDrive.setZeroPowerBehavior(ZeroPowerBehavior.BRAKE);
-        rightFrontDrive.setZeroPowerBehavior(ZeroPowerBehavior.BRAKE);
-        rightBackDrive.setZeroPowerBehavior(ZeroPowerBehavior.BRAKE);
-
-        // Launcher/feeder directions and PIDF (keep existing PIDF since you're already using RUN_USING_ENCODER;
-        // we are NOT adding any automatic RPM control here)
-        launcher.setDirection(DcMotorEx.Direction.REVERSE);
-        if (launcher1 != null) {
-            launcher1.setDirection(DcMotorEx.Direction.FORWARD); // mirror direction so both spin same physical way
-        }
-        feed.setDirection(DcMotorEx.Direction.REVERSE);
-
-        launcher.setPIDFCoefficients(
-                DcMotorEx.RunMode.RUN_USING_ENCODER,
-                new PIDFCoefficients(60, 0, 0, 12)
-        );
-        if (launcher1 != null) {
-            launcher1.setPIDFCoefficients(
-                    DcMotorEx.RunMode.RUN_USING_ENCODER,
-                    new PIDFCoefficients(60, 0, 0, 12)
-            );
-        }
-
-        // Limelight initialization (non-blocking polling)
-        try {
-            limelight = hardwareMap.get(Limelight3A.class, "limelight");
-            limelight.setPollRateHz(100);
-            limelight.pipelineSwitch(0);
-            limelight.start();
-        } catch (Exception e) {
-            limelight = null; // continue without Limelight if not present
-        }
+        // Single-command init for other motors
+        Inits.init(hardwareMap);
+        intake = Inits.getIntakeEx();
+        feed = Inits.getFeedEx();
+        // single statement to enable auto-aim; Limelight init is handled inside LimelightAiming
+        limelightAimer = new LimelightAiming(hardwareMap, ROTATION_KP, AIM_TOLERANCE_DEG, MIN_ROTATION_POWER, MAX_ROTATION_POWER);
 
         panelsTelemetry = PanelsTelemetry.INSTANCE.getTelemetry();
 
@@ -198,19 +140,13 @@ public class FarSideRed extends OpMode {
         panelsTelemetry.debug("Y", follower.getPose().getY());
 
         panelsTelemetry.debug("Heading", follower.getPose().getHeading());
-
         // Limelight telemetry
-        if (limelight != null) {
-            LLResult r = limelight.getLatestResult();
-            if (r != null && r.isValid()) {
-                panelsTelemetry.debug("LL_hasTarget", "true");
-                panelsTelemetry.debug("LL_tx", String.format("%.2f", r.getTx()));
-                panelsTelemetry.debug("LL_ta", String.format("%.2f", r.getTa()));
-            } else {
-                panelsTelemetry.debug("LL_hasTarget", "false");
-            }
+        if (limelightAimer.hasValidTarget()) {
+            panelsTelemetry.debug("LL_hasTarget", "true");
+            panelsTelemetry.debug("LL_tx", String.format("%.2f", limelightAimer.getTxOrNaN()));
+            panelsTelemetry.debug("LL_ta", String.format("%.2f", limelightAimer.getTaOrNaN()));
         } else {
-            panelsTelemetry.debug("LL", "Not configured");
+            panelsTelemetry.debug("LL_hasTarget", "false");
         }
 
         panelsTelemetry.debug("AimStatus", aimDone ? "aligned/idle" : (aimingStarted ? "aiming" : "idle"));
@@ -270,13 +206,15 @@ public class FarSideRed extends OpMode {
 
                 // If aiming is active and not done, run aim step (non-blocking)
                 if (aimingStarted && !aimDone) {
-                    if (doAimStep()) {
+                    Double rot = limelightAimer.getRotationIfNeeded();
+                    if (rot == null) {
                         aimDone = true;
                         aimingStarted = false;
-                        // stop rotation
                         mecanumDrive(0, 0, 0);
-                    } else if (System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
-                        // time out
+                    } else {
+                        mecanumDrive(0, 0, rot);
+                    }
+                    if (!aimDone && System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
                         aimDone = true;
                         aimingStarted = false;
                         mecanumDrive(0, 0, 0);
@@ -284,13 +222,10 @@ public class FarSideRed extends OpMode {
                 }
 
                 // Start feeding only after spin-up time AND (aim is done OR there is no target)
-                if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0
-                        && (aimDone || limelight == null || !hasLimelightTarget())) {
-
+                if (System.currentTimeMillis() - launcherStartTime >= 1600
+                        && (aimDone || !limelightAimer.hasValidTarget())) {
                     feed.setPower(1.0);
-
                     intake.setPower(1.0);
-
                 }
 
                 if (waitStarted && System.currentTimeMillis() - waitStartTime >= paths.Wait2) {
@@ -425,11 +360,15 @@ public class FarSideRed extends OpMode {
                 }
 
                 if (aimingStarted && !aimDone) {
-                    if (doAimStep()) {
+                    Double rot = limelightAimer.getRotationIfNeeded();
+                    if (rot == null) {
                         aimDone = true;
                         aimingStarted = false;
                         mecanumDrive(0, 0, 0);
-                    } else if (System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
+                    } else {
+                        mecanumDrive(0, 0, rot);
+                    }
+                    if (!aimDone && System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
                         aimDone = true;
                         aimingStarted = false;
                         mecanumDrive(0, 0, 0);
@@ -437,7 +376,7 @@ public class FarSideRed extends OpMode {
                 }
 
                 if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0
-                        && (aimDone || limelight == null || !hasLimelightTarget())) {
+                        && (aimDone || !limelightAimer.hasValidTarget())) {
 
                     feed.setPower(1.0);
 
@@ -604,11 +543,15 @@ public class FarSideRed extends OpMode {
                 }
 
                 if (aimingStarted && !aimDone) {
-                    if (doAimStep()) {
+                    Double rot = limelightAimer.getRotationIfNeeded();
+                    if (rot == null) {
                         aimDone = true;
                         aimingStarted = false;
                         mecanumDrive(0, 0, 0);
-                    } else if (System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
+                    } else {
+                        mecanumDrive(0, 0, rot);
+                    }
+                    if (!aimDone && System.currentTimeMillis() - aimStartTime >= AIM_TIMEOUT_MS) {
                         aimDone = true;
                         aimingStarted = false;
                         mecanumDrive(0, 0, 0);
@@ -616,7 +559,7 @@ public class FarSideRed extends OpMode {
                 }
 
                 if (System.currentTimeMillis() - launcherStartTime >= 1600 && feed.getPower() == 0
-                        && (aimDone || limelight == null || !hasLimelightTarget())) {
+                        && (aimDone || !limelightAimer.hasValidTarget())) {
 
                     feed.setPower(1.0);
 
@@ -680,45 +623,9 @@ public class FarSideRed extends OpMode {
 
     }
 
-    // Helper: check Limelight target presence
-    private boolean hasLimelightTarget() {
-        if (limelight == null) return false;
-        LLResult r = limelight.getLatestResult();
-        return r != null && r.isValid();
-    }
-
-    // Perform one aim step; returns true if aligned (within tolerance)
-    private boolean doAimStep() {
-        if (limelight == null) {
-            return true; // no limelight -> treat as aligned so we don't block firing
-        }
-        LLResult result = limelight.getLatestResult();
-        if (result == null || !result.isValid()) {
-            return true; // no valid target -> treat as aligned (we'll skip aiming)
-        }
-        double tx = result.getTx(); // degrees
-        double rotationPower = tx * ROTATION_KP;
-
-        if (Math.abs(tx) < AIM_TOLERANCE_DEG) {
-            // aligned
-            return true;
-        } else {
-            // ensure minimum command
-            if (Math.abs(rotationPower) < MIN_ROTATION_POWER) {
-                rotationPower = Math.copySign(MIN_ROTATION_POWER, rotationPower);
-            }
-            // cap
-            rotationPower = Math.max(-MAX_ROTATION_POWER, Math.min(MAX_ROTATION_POWER, rotationPower));
-            // Apply rotation only (no forward/strafe)
-            mecanumDrive(0, 0, rotationPower);
-            return false;
-        }
-    }
-
-    // Set both launcher motors (dual support)
+    // Set both launcher motors (dual support) - delegate to centralized helper
     private void setLauncherVelocity(double velocity) {
-        if (launcher != null) launcher.setVelocity(velocity);
-        if (launcher1 != null) launcher1.setVelocity(velocity);
+        DualLauncher.setLauncherVelocity(velocity);
     }
 
     // Mecanum drive helper (simple power set)

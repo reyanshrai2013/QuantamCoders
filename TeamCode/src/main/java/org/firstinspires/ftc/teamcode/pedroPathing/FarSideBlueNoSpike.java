@@ -13,7 +13,7 @@ import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
 import static java.lang.Thread.sleep;
 
-import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.Constants;
 
 @Autonomous(name = "FAR SIDE BLUE NO SPIKE", group = "No Spike")
 @Configurable

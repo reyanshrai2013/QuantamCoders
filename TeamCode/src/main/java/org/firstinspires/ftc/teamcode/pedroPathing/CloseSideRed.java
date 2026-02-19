@@ -2,9 +2,7 @@ package org.firstinspires.ftc.teamcode.pedroPathing;
 
 import static java.lang.Thread.sleep;
 
-import com.google.blocks.ftcrobotcontroller.runtime.obsolete.TensorFlowAccess;
 import com.pedropathing.follower.Follower;
-import com.pedropathing.geometry.BezierCurve;
 import com.pedropathing.geometry.BezierLine;
 import com.pedropathing.geometry.Pose;
 import com.pedropathing.paths.PathChain;
@@ -13,6 +11,8 @@ import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
+
+import org.firstinspires.ftc.teamcode.pedroPathing.Utilities.Constants;
 
 @Autonomous(name = "RED CLOSE SIDE", group = "Pedro Pathing")
 public class CloseSideRed extends OpMode {
