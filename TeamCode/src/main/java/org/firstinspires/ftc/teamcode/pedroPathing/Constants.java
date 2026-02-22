@@ -1,20 +1,14 @@
 package org.firstinspires.ftc.teamcode.pedroPathing;
 
-import static org.firstinspires.ftc.robotcore.external.BlocksOpModeCompanion.hardwareMap;
-
 import com.pedropathing.control.FilteredPIDFCoefficients;
 import com.pedropathing.control.PIDFCoefficients;
 import com.pedropathing.follower.Follower;
 import com.pedropathing.follower.FollowerConstants;
 import com.pedropathing.ftc.FollowerBuilder;
 import com.pedropathing.ftc.drivetrains.MecanumConstants;
-import com.pedropathing.ftc.localization.Encoder;
 import com.pedropathing.ftc.localization.constants.PinpointConstants;
-import com.pedropathing.ftc.localization.constants.ThreeWheelIMUConstants;
 import com.pedropathing.paths.PathConstraints;
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
-import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
-import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
@@ -37,8 +31,8 @@ public class Constants {
             .strafeEncoderDirection(GoBildaPinpointDriver.EncoderDirection.REVERSED);
 
     public static MecanumConstants driveConstants = new MecanumConstants()
-            .xVelocity(55.70072864872897)
-            .yVelocity(42.78379594256929)
+            .xVelocity(73.19551482914001)
+            .yVelocity(52.29021592027559)
             .maxPower(1)
             .rightFrontMotorName("rf")
             .rightRearMotorName("rb")
@@ -52,16 +46,16 @@ public class Constants {
 
 
     public static FollowerConstants followerConstants = new FollowerConstants()
-            .mass(10.646)
-            .forwardZeroPowerAcceleration(-35.48579206025317)
-            .lateralZeroPowerAcceleration(-68.40207277606939)
-            .translationalPIDFCoefficients(new PIDFCoefficients(0.11, 0, 0.0002, 0.01))
-            .headingPIDFCoefficients(new PIDFCoefficients(0.4,0,0.002,0.012))
-            .drivePIDFCoefficients(new FilteredPIDFCoefficients(0.025,0,0.00001,0.6,0.006))
+            .mass(11.4)
+            .forwardZeroPowerAcceleration(-33.201088434681814)
+            .lateralZeroPowerAcceleration(-58.23338115651832)
+            .translationalPIDFCoefficients(new PIDFCoefficients(0.07, 0, 0.01, 0.01))
+            .headingPIDFCoefficients(new PIDFCoefficients(1.5,0,0.02,0.006))
+            .drivePIDFCoefficients(new FilteredPIDFCoefficients(1,0,0.1,0.6,0.0))
             .centripetalScaling(0.0005)
             ;
 
-    public static PathConstraints pathConstraints = new PathConstraints(1, 70, 0.866, 1);
+    public static PathConstraints pathConstraints = new PathConstraints(1, 70, 1.8, 1);
 
     public static Follower createFollower(HardwareMap hardwareMap) {
         return new FollowerBuilder(followerConstants, hardwareMap)
